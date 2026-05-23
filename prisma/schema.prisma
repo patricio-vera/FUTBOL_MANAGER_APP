@@ -1,0 +1,83 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL")
+}
+
+model Player {
+  id                String              @id @default(uuid())
+  fullName          String              @unique
+  nationality       String
+  age               Int
+  position          String
+  photoUrl          String?
+  createdAt         DateTime            @default(now())
+  playerMatches     PlayerMatch[]
+  aggregatedRatings AggregatedRating[]
+  contracts         Contract[]
+}
+
+model Match {
+  id            String        @id @default(uuid())
+  homeTeam      String
+  awayTeam      String
+  homeScore     Int           @default(0)
+  awayScore     Int           @default(0)
+  matchDate     DateTime
+  competition   String
+  season        String
+  playerMatches PlayerMatch[]
+}
+
+model PlayerMatch {
+  id                 String               @id @default(uuid())
+  playerId           String
+  matchId            String
+  minutesPlayed      Int
+  positionPlayed     String
+  player             Player               @relation(fields: [playerId], references: [id])
+  match              Match                @relation(fields: [matchId], references: [id])
+  performanceMetrics PerformanceMetric[]
+}
+
+model PerformanceMetric {
+  id            String      @id @default(uuid())
+  playerMatchId String
+  metricKey     String
+  metricValue   Float
+  recordedAt    DateTime    @default(now())
+  playerMatch   PlayerMatch @relation(fields: [playerMatchId], references: [id])
+}
+
+model PositionWeight {
+  id        String @id @default(uuid())
+  position  String
+  metricKey String
+  weight    Float
+}
+
+model AggregatedRating {
+  id            String   @id @default(uuid())
+  playerId      String
+  season        String
+  position      String
+  overallRating Float
+  radarSnapshot Json
+  computedAt    DateTime @default(now())
+  player        Player   @relation(fields: [playerId], references: [id])
+}
+
+model Contract {
+  id             String   @id @default(uuid())
+  playerId       String
+  club           String
+  startDate      DateTime
+  endDate        DateTime
+  marketValueEur Float
+  status         String   @default("active")
+  player         Player   @relation(fields: [playerId], references: [id])
+}
