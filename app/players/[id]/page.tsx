@@ -1,7 +1,7 @@
 import { getPlayerById } from "@/lib/services/player.service";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { Activity, Star, Award, ChevronLeft } from "lucide-react";
+import { Star, ChevronLeft } from "lucide-react";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -17,7 +17,67 @@ export default async function PlayerProfilePage({ params }: PageProps) {
     notFound();
   }
 
+  // Extraemos el rating global
   const rating = player.aggregatedRatings?.[0]?.overallRating || "N/A";
+
+  // Extraemos el snapshot en crudo desde Neon
+  const snapshotRaw = player.aggregatedRatings?.[0]?.radarSnapshot;
+
+  // Función ayudante para buscar el valor numérico correcto dentro del arreglo JSON de forma segura
+  const getMetricValue = (axisName: string, fallback: number): number => {
+    if (!Array.isArray(snapshotRaw)) return fallback;
+    const found = snapshotRaw.find(
+      (item: any) => item?.axis?.toLowerCase() === axisName.toLowerCase()
+    );
+    return found && typeof found.value === "number" ? found.value : fallback;
+  };
+
+  // Mapeamos los nombres exactos que descubrimos en la consola de diagnóstico
+  const stats = {
+    ritmo: getMetricValue("Pace", 70),
+    tiro: getMetricValue("Goals/90", 65),
+    pase: getMetricValue("Passing", 80),
+    regate: getMetricValue("Dribbling", 75),
+    defensa: getMetricValue("Pressing", 72)
+  };
+
+  // --- CONFIGURACIÓN MATEMÁTICA DEL RADAR ---
+  const center = 150;     
+  const maxRadius = 100;  
+  const totalStats = 5;   
+
+  const getCoordinates = (index: number, value: number) => {
+    const angle = (Math.PI * 2 / totalStats) * index - Math.PI / 2;
+    const radius = (value / 100) * maxRadius;
+    const x = center + radius * Math.cos(angle);
+    const y = center + radius * Math.sin(angle);
+    return { x, y };
+  };
+
+  // Capas concéntricas de fondo (25%, 50%, 75%, 100%)
+  const levels = [25, 50, 75, 100];
+  const levelPaths = levels.map((level) => {
+    return Array.from({ length: totalStats }).map((_, i) => {
+      const { x, y } = getCoordinates(i, level);
+      return `${x},${y}`;
+    }).join(" ");
+  });
+
+  // Coordenadas reales del Polígono según la Base de Datos
+  const playerStatsArray = [stats.ritmo, stats.tiro, stats.pase, stats.regate, stats.defensa];
+  const playerPoints = playerStatsArray.map((val, i) => {
+    const { x, y } = getCoordinates(i, val);
+    return `${x},${y}`;
+  }).join(" ");
+
+  // Textos exteriores con valores extraídos en tiempo real
+  const labels = [
+    { name: `RIT (${stats.ritmo})`, ...getCoordinates(0, 125) },
+    { name: `TIR (${stats.tiro})`, ...getCoordinates(1, 120) },
+    { name: `PAS (${stats.pase})`, ...getCoordinates(2, 120) },
+    { name: `REG (${stats.regate})`, ...getCoordinates(3, 120) },
+    { name: `DEF (${stats.defensa})`, ...getCoordinates(4, 125) },
+  ];
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-white p-8">
@@ -68,17 +128,87 @@ export default async function PlayerProfilePage({ params }: PageProps) {
               </div>
             </div>
 
-            {/* Espacio reservado para renderizar el Polígono de Radar */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-xl flex flex-col items-center justify-center min-h-[350px] text-center relative overflow-hidden">
-              <div className="w-20 h-20 bg-slate-800 border border-slate-700 rounded-full flex items-center justify-center text-blue-400 mb-4">
-                <Activity size={32} />
+            {/* Espacio del Polígono de Radar SVG Dinámico */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-xl flex flex-col items-center justify-center min-h-[420px] relative overflow-hidden">
+              <div className="self-start mb-6">
+                <h3 className="text-lg font-bold text-slate-200">Análisis del Área de Rendimiento</h3>
+                <p className="text-slate-400 text-xs mt-0.5">Polígono técnico indexado directamente desde la base de datos.</p>
               </div>
-              <h3 className="text-xl font-bold text-slate-200">Análisis del Área de Rendimiento</h3>
-              <p className="text-slate-400 text-sm max-w-sm mt-2">
-                Aquí renderizaremos el polígono técnico usando gráficos SVG dinámicos.
-              </p>
-              <div className="mt-6 inline-flex items-center gap-2 text-xs bg-slate-800 text-slate-400 px-3 py-1.5 rounded-full border border-slate-700/50">
-                <Award size={14} /> Próximo paso: Estructuración del Radar SVG
+
+              {/* CONTENEDOR DEL GRÁFICO VECTORIAL */}
+              <div className="relative w-full max-w-[280px] aspect-square flex items-center justify-center">
+                <svg viewBox="0 0 300 300" className="w-full h-full overflow-visible">
+                  
+                  {/* Rejilla de pentágonos concéntricos */}
+                  {levelPaths.map((points, idx) => (
+                    <polygon
+                      key={idx}
+                      points={points}
+                      fill="none"
+                      stroke="#334155"
+                      strokeWidth="1"
+                      strokeDasharray={idx !== 3 ? "4 4" : "0"}
+                    />
+                  ))}
+
+                  {/* Ejes de simetría */}
+                  {Array.from({ length: totalStats }).map((_, i) => {
+                    const { x, y } = getCoordinates(i, 100);
+                    return (
+                      <line
+                        key={i}
+                        x1={center}
+                        y1={center}
+                        x2={x}
+                        y2={y}
+                        stroke="#1e293b"
+                        strokeWidth="1.5"
+                      />
+                    );
+                  })}
+
+                  {/* EL POLÍGONO INTERACTIVO DINÁMICO */}
+                  <polygon
+                    points={playerPoints}
+                    fill="rgba(59, 130, 246, 0.2)"
+                    stroke="#3b82f6"
+                    strokeWidth="2.5"
+                    className="transition-all duration-300 ease-out"
+                  />
+
+                  {/* Nodos puntuales */}
+                  {playerStatsArray.map((val, i) => {
+                    const { x, y } = getCoordinates(i, val);
+                    return (
+                      <circle
+                        key={i}
+                        cx={x}
+                        cy={y}
+                        r="4"
+                        fill="#60a5fa"
+                        stroke="#0f172a"
+                        strokeWidth="1.5"
+                      />
+                    );
+                  })}
+
+                  {/* Textos perimetrales */}
+                  {labels.map((label, i) => (
+                    <text
+                      key={i}
+                      x={label.x}
+                      y={label.y}
+                      fill="#94a3b8"
+                      fontSize="11"
+                      fontWeight="bold"
+                      textAnchor="middle"
+                      alignmentBaseline="middle"
+                      className="font-sans tracking-wide"
+                    >
+                      {label.name}
+                    </text>
+                  ))}
+                </svg>
               </div>
             </div>
           </div>
