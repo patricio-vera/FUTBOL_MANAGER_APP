@@ -9,13 +9,13 @@ datasource db {
 }
 
 model Player {
-  id                String              @id @default(uuid())
-  fullName          String              @unique
+  id                String             @id @default(uuid())
+  fullName          String             // ¡Corregido! Ya no es @unique para evitar colisiones de nombres reales
   nationality       String
   age               Int
   position          String
   photoUrl          String?
-  createdAt         DateTime            @default(now())
+  createdAt         DateTime           @default(now())
   playerMatches     PlayerMatch[]
   aggregatedRatings AggregatedRating[]
   contracts         Contract[]
@@ -34,14 +34,18 @@ model Match {
 }
 
 model PlayerMatch {
-  id                 String               @id @default(uuid())
+  id                 String              @id @default(uuid())
   playerId           String
   matchId            String
   minutesPlayed      Int
   positionPlayed     String
-  player             Player               @relation(fields: [playerId], references: [id])
-  match              Match                @relation(fields: [matchId], references: [id])
+  player             Player              @relation(fields: [playerId], references: [id])
+  match              Match               @relation(fields: [matchId], references: [id])
   performanceMetrics PerformanceMetric[]
+
+  // Índices esenciales para buscar rápido los partidos de un jugador o los jugadores de un partido
+  @@index([playerId])
+  @@index([matchId])
 }
 
 model PerformanceMetric {
@@ -51,6 +55,9 @@ model PerformanceMetric {
   metricValue   Float
   recordedAt    DateTime    @default(now())
   playerMatch   PlayerMatch @relation(fields: [playerMatchId], references: [id])
+
+  // ¡El índice más importante del proyecto! Evita que las consultas de métricas colapsen el servidor
+  @@index([playerMatchId])
 }
 
 model PositionWeight {
@@ -58,6 +65,9 @@ model PositionWeight {
   position  String
   metricKey String
   weight    Float
+
+  // Permite buscar rápido los pesos por posición al recalcular los radares
+  @@index([position])
 }
 
 model AggregatedRating {
@@ -69,6 +79,13 @@ model AggregatedRating {
   radarSnapshot Json
   computedAt    DateTime @default(now())
   player        Player   @relation(fields: [playerId], references: [id])
+  
+  // Agregado aquí: Controla que no se duplique un jugador en la misma temporada y posición
+  @@unique([playerId, season, position], name: "playerId_season_position")
+
+  // Optimiza la carga del perfil del jugador y sus rankings por temporada
+  @@index([playerId])
+  @@index([season])
 }
 
 model Contract {
@@ -80,4 +97,7 @@ model Contract {
   marketValueEur Float
   status         String   @default("active")
   player         Player   @relation(fields: [playerId], references: [id])
+
+  // Agiliza la búsqueda financiera y estados contractuales
+  @@index([playerId])
 }

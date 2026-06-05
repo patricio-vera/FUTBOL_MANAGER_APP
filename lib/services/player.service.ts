@@ -1,9 +1,7 @@
 // =============================================================================
-// PLAYER SERVICE — Capa de negocio
+// PLAYER SERVICE — Capa de negocio (ACTUALIZADO Y BLINDADO)
 // =============================================================================
 import { prisma } from "@/lib/db/prisma";
-
-// ... (tus interfaces CreatePlayerInput, etc.)
 
 // ---------------------------------------------------------------------------
 // FUNCIÓN: getPlayers (Plural)
@@ -19,10 +17,22 @@ export async function getPlayers(filters: any = {}) {
     const players = await prisma.player.findMany({
       where,
       orderBy: { fullName: "asc" },
-      include: {
+      // 🛡️ Cambiado include por select: Solo extrae datos autorizados públicamente
+      select: {
+        id: true,
+        fullName: true,
+        position: true,
+        nationality: true,
+        age: true,
+        photoUrl: true,
+        createdAt: true,
         aggregatedRatings: {
           orderBy: { computedAt: "desc" },
           take: 1,
+          select: {
+            overallRating: true,
+            radarSnapshot: true,
+          }
         },
       },
     });
@@ -48,16 +58,29 @@ export async function createPlayer(data: any) {
     }
   });
 }
+
 // ---------------------------------------------------------------------------
 // OBTENER UN JUGADOR POR ID (Para el GET de /api/players/[id])
 // ---------------------------------------------------------------------------
 export async function getPlayerById(id: string) {
   return await prisma.player.findUnique({
     where: { id },
-    include: {
+    // 🛡️ Blindaje extremo: Evita que campos privados o futuros viajen al navegador
+    select: {
+      id: true,
+      fullName: true,
+      position: true,
+      nationality: true,
+      age: true,
+      photoUrl: true,
+      createdAt: true,
       aggregatedRatings: {
         orderBy: { computedAt: "desc" },
         take: 1,
+        select: {
+          overallRating: true,
+          radarSnapshot: true,
+        }
       },
     },
   });

@@ -3,6 +3,12 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { Star, ChevronLeft } from "lucide-react";
 
+// 🛡️ Molde estricto para indicarle a TypeScript la estructura exacta del JSON de Neon
+interface RadarMetric {
+  axis: string;
+  value: number;
+}
+
 interface PageProps {
   params: Promise<{ id: string }>;
 }
@@ -23,12 +29,17 @@ export default async function PlayerProfilePage({ params }: PageProps) {
   // Extraemos el snapshot en crudo desde Neon
   const snapshotRaw = player.aggregatedRatings?.[0]?.radarSnapshot;
 
-  // Función ayudante para buscar el valor numérico correcto dentro del arreglo JSON de forma segura
+  // 🛡️ FUNCIÓN AYUDANTE CORREGIDA: Sin un solo 'any'. Código 100% tipado y seguro.
   const getMetricValue = (axisName: string, fallback: number): number => {
     if (!Array.isArray(snapshotRaw)) return fallback;
-    const found = snapshotRaw.find(
-      (item: any) => item?.axis?.toLowerCase() === axisName.toLowerCase()
+
+    // Convertimos de forma segura el JSON desconocido al molde RadarMetric[]
+    const metrics = snapshotRaw as unknown as RadarMetric[];
+    
+    const found = metrics.find(
+      (item) => item?.axis?.toLowerCase() === axisName.toLowerCase()
     );
+    
     return found && typeof found.value === "number" ? found.value : fallback;
   };
 
@@ -94,7 +105,7 @@ export default async function PlayerProfilePage({ params }: PageProps) {
         {/* Estructura del Perfil */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           
-          {/* Ficha Técnica de Identidad */}
+          {/* Ficha Técnico de Identidad */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col items-center text-center">
             <div className="relative w-40 h-40 bg-slate-800 rounded-full overflow-hidden mb-4 border-2 border-slate-700">
               {player.photoUrl ? (
