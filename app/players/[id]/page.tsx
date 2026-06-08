@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { Star, ChevronLeft } from "lucide-react";
 
-// 🛡️ Molde estricto para indicarle a TypeScript la estructura exacta del JSON de Neon
+//  Molde estricto para indicarle a TypeScript la estructura exacta del JSON de Neon
 interface RadarMetric {
   axis: string;
   value: number;
@@ -29,7 +29,7 @@ export default async function PlayerProfilePage({ params }: PageProps) {
   // Extraemos el snapshot en crudo desde Neon
   const snapshotRaw = player.aggregatedRatings?.[0]?.radarSnapshot;
 
-  // 🛡️ FUNCIÓN AYUDANTE CORREGIDA: Sin un solo 'any'. Código 100% tipado y seguro.
+  //  FUNCIÓN AYUDANTE CORREGIDA: Sin un solo 'any'. Código 100% tipado y seguro.
   const getMetricValue = (axisName: string, fallback: number): number => {
     if (!Array.isArray(snapshotRaw)) return fallback;
 
