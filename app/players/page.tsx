@@ -13,6 +13,12 @@ import { getActiveOrgId } from "@/lib/auth/active-org";
 import { getPlayers } from "@/lib/services/player.service";
 import { isOptimizableImageUrl } from "@/lib/domain/images";
 
+// Depende de la organización activa por-request (hoy DEV_ORG_ID, mañana la
+// sesión de Auth.js vía MM-008): nunca se puede pre-renderizar como estática.
+// Sin esto, `next build` intenta congelarla en build-time, donde
+// getActiveOrgId() se niega a resolver (a propósito) porque no hay sesión.
+export const dynamic = "force-dynamic";
+
 export default async function PlayersPage() {
   const orgId = await getActiveOrgId();
   const { data: players } = await getPlayers(orgId, { limit: 24 });

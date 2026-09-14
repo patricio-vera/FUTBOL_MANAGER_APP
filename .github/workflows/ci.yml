@@ -76,6 +76,5 @@ jobs:
       - run: npm ci
 
       # Falla el build con cualquier vulnerabilidad alta o crítica.
-      # Al escribir el ticket había 15: 4 críticas y 8 altas.
       - name: Auditoría de dependencias
         run: npm audit --audit-level=high

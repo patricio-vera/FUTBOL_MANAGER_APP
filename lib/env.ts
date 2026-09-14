@@ -66,26 +66,37 @@ const envSchema = z
       });
     }
 
-    if (value.NODE_ENV === "production" && !value.DIRECT_DATABASE_URL) {
+    // Este guardrail protege el pooler de Neon (pgbouncer), no "producción" en
+    // abstracto: si DATABASE_URL y DIRECT_DATABASE_URL son la misma cadena
+    // pooled, las migraciones agotan las conexiones agrupadas bajo carga.
+    // Antes disparaba con NODE_ENV === "production", pero `next build` fuerza
+    // NODE_ENV=production incluso en un build local contra Postgres en Docker
+    // (sin pooler, donde ambas cadenas son legítimamente la misma). Por eso se
+    // ata a si la conexión es a Neon (host `neon.tech`), sin importar NODE_ENV:
+    // un `next dev` apuntando a Neon por error corre el mismo riesgo que un
+    // deploy real.
+    const usesNeon =
+      value.DATABASE_URL.includes("neon.tech") ||
+      (value.DIRECT_DATABASE_URL?.includes("neon.tech") ?? false);
+
+    if (usesNeon && !value.DIRECT_DATABASE_URL) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["DIRECT_DATABASE_URL"],
         message:
-          "En producción DIRECT_DATABASE_URL es obligatoria y debe ser DISTINTA de " +
-          "DATABASE_URL: si ambas apuntan a la misma cadena se anula el pooling de Neon.",
+          "DATABASE_URL apunta a Neon: DIRECT_DATABASE_URL es obligatoria y debe ser DISTINTA " +
+          "de DATABASE_URL para las migraciones — si ambas apuntan a la misma cadena se anula " +
+          "el pooling de Neon.",
       });
     }
 
-    if (
-      value.NODE_ENV === "production" &&
-      value.DIRECT_DATABASE_URL === value.DATABASE_URL
-    ) {
+    if (usesNeon && value.DIRECT_DATABASE_URL === value.DATABASE_URL) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["DIRECT_DATABASE_URL"],
         message:
-          "DIRECT_DATABASE_URL no puede ser igual a DATABASE_URL: la primera es la conexión " +
-          "directa (migraciones), la segunda la agrupada (runtime).",
+          "DIRECT_DATABASE_URL no puede ser igual a DATABASE_URL cuando se usa Neon: la " +
+          "primera es la conexión directa (migraciones), la segunda la agrupada (runtime).",
       });
     }
   });

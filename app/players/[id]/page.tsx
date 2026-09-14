@@ -22,6 +22,10 @@ import { getPlayerById } from "@/lib/services/player.service";
 import { parseRadarSnapshot } from "@/lib/services/rating-aggregator.service";
 import { isOptimizableImageUrl } from "@/lib/domain/images";
 
+// Depende de la organización activa por-request (hoy DEV_ORG_ID, mañana la
+// sesión de Auth.js vía MM-008): nunca se puede pre-renderizar como estática.
+export const dynamic = "force-dynamic";
+
 interface PageProps {
   params: { id: string };
 }

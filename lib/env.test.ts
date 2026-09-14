@@ -61,19 +61,35 @@ describe("validación de entorno", () => {
     );
   });
 
-  it("en producción exige que las dos cadenas de Neon sean distintas", async () => {
+  it("si DATABASE_URL apunta a Neon, exige que las dos cadenas sean distintas", async () => {
+    // El guardrail protege el pooler de Neon, no "producción" en abstracto:
+    // dispara por el host, sin importar NODE_ENV.
+    const neonUrl =
+      "postgresql://u:p@ep-fake-pooler.sa-east-1.aws.neon.tech/db?sslmode=require&pgbouncer=true";
     await expect(
       loadWith({
-        NODE_ENV: "production",
-        DIRECT_DATABASE_URL: VALID.DATABASE_URL,
+        DATABASE_URL: neonUrl,
+        DIRECT_DATABASE_URL: neonUrl,
       })
     ).rejects.toThrow(/no puede ser igual/);
   });
 
-  it("en producción exige DIRECT_DATABASE_URL", async () => {
+  it("si DATABASE_URL apunta a Neon, exige DIRECT_DATABASE_URL", async () => {
+    const neonUrl =
+      "postgresql://u:p@ep-fake-pooler.sa-east-1.aws.neon.tech/db?sslmode=require&pgbouncer=true";
     await expect(
-      loadWith({ NODE_ENV: "production", DIRECT_DATABASE_URL: undefined })
+      loadWith({ DATABASE_URL: neonUrl, DIRECT_DATABASE_URL: undefined })
     ).rejects.toThrow(/DIRECT_DATABASE_URL/);
+  });
+
+  it("con Postgres local (no Neon) permite que las dos cadenas sean iguales, incluso en producción", async () => {
+    // `next build` fuerza NODE_ENV=production incluso en un build local sin
+    // pooler: ahí DATABASE_URL y DIRECT_DATABASE_URL son legítimamente iguales.
+    const { env } = await loadWith({
+      NODE_ENV: "production",
+      DIRECT_DATABASE_URL: VALID.DATABASE_URL,
+    });
+    expect(env.isProduction).toBe(true);
   });
 
   it("normaliza el allowlist de imágenes", async () => {
