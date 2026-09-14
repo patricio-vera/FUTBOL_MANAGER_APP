@@ -13,6 +13,7 @@
 // =============================================================================
 
 import { PrismaClient } from "@prisma/client";
+import { env } from "@/lib/env";
 
 // Extendemos el tipo global de Node.js para incluir el campo prisma
 declare global {
@@ -25,12 +26,12 @@ export const prisma =
   globalThis.prisma ??
   new PrismaClient({
     log:
-      process.env.NODE_ENV === "development"
+      env.isDevelopment
         ? ["query", "error", "warn"]  // Muestra las queries SQL en la consola
         : ["error"],
   });
 
-if (process.env.NODE_ENV !== "production") {
+if (!env.isProduction) {
   globalThis.prisma = prisma;
 }
 

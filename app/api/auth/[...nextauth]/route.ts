@@ -10,6 +10,7 @@ import NextAuth from "next-auth";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/db/prisma";
 import type { NextAuthOptions } from "next-auth";
+import { env } from "@/lib/env";
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
@@ -35,7 +36,7 @@ export const authOptions: NextAuthOptions = {
     maxAge: 7 * 24 * 60 * 60, // 7 días
   },
 
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: env.sessionSecret,
 
   callbacks: {
     // Incluye el rol del usuario en el JWT → el middleware puede leerlo

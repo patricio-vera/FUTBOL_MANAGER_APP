@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Valores de test. El secreto debe superar los 32 caracteres que exige lib/env.ts.
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/managermetrics_test?schema=public
+  DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/managermetrics_test?schema=public
+  AUTH_SECRET: ci-secret-solo-para-tests-no-usar-en-produccion-jamas
+  AUTH_URL: http://localhost:3000
+  NODE_ENV: test
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: managermetrics_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      # Este paso es el que faltaba: sin el cliente generado, @prisma/client
+      # resuelve a `any` y tsc valida exactamente nada.
+      - name: Aplicar migraciones y generar el cliente Prisma
+        run: |
+          npx prisma migrate deploy
+          npx prisma generate
+
+      - name: Comprobación de tipos
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npx eslint . --max-warnings=0
+
+      - name: Tests
+        run: npx vitest run
+
+      - name: Build de producción
+        run: npm run build
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # Falla el build con cualquier vulnerabilidad alta o crítica.
+      # Al escribir el ticket había 15: 4 críticas y 8 altas.
+      - name: Auditoría de dependencias
+        run: npm audit --audit-level=high

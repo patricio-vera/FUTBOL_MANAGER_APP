@@ -1,152 +1,237 @@
 // =============================================================================
-// METRICS SERVICE — Series de tiempo y registro de métricas por partido
+// METRICS SERVICE — participaciones y métricas de rendimiento
 // =============================================================================
-// Gestiona el patrón EAV (Entity-Attribute-Value) de performance_metrics.
-// SQL Server analogy: consultas con PIVOT o CTEs para series de tiempo.
+// Cambio estructural respecto al Ciclo 1:
+//
+//   ANTES: todo era EAV (`performance_metrics`), y cada eje del radar disparaba
+//          su propio `aggregate`. Seis consultas independientes para pintar una
+//          tarjeta, sobre una tabla que crece por jugador × partido × métrica.
+//
+//   AHORA: las métricas del hot-path (las que alimentan radar y ranking) son
+//          columnas tipadas de `Appearance`, y una sola consulta agregada
+//          devuelve la temporada completa de un jugador. El EAV
+//          (`MetricObservation`) queda para la cola larga de eventos, acotado
+//          por el catálogo `MetricDefinition`.
 // =============================================================================
 
+import { Prisma, Position } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { CORE_METRIC_COLUMNS, type CoreMetricColumn } from "@/lib/domain/metrics";
 
-// ---------------------------------------------------------------------------
-// Tipos
-// ---------------------------------------------------------------------------
-export interface MetricInput {
-  metric_key: string;
-  metric_value: number;
-  recorded_at?: Date;
+export { CORE_METRIC_COLUMNS };
+export type { CoreMetricColumn };
+
+
+export interface AppearanceInput {
+  matchId: string;
+  minutesPlayed: number;
+  positionPlayed: Position;
+  startedMatch?: boolean;
+  /** Totales del partido para las columnas tipadas. */
+  core?: Partial<Record<CoreMetricColumn, number>>;
+  /** Métricas de la cola larga; la clave debe existir en MetricDefinition. */
+  observations?: Array<{ metricKey: string; metricValue: number }>;
+  recordedById?: string;
 }
 
-export interface MetricTimeSeriesPoint {
-  recorded_at: Date;
-  metric_value: number;
-  match_date?: Date;
+export interface SeasonTotals {
+  playerId: string;
+  season: string;
+  matches: number;
+  minutesPlayed: number;
+  /** Posición en la que jugó más minutos en la temporada. */
+  primaryPosition: Position | null;
+  totals: Record<CoreMetricColumn, number>;
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/players/:id/metrics — Serie de tiempo de una métrica específica
-// Parámetros opcionales: from, to (rango de fechas), metric_key
-//
-// SQL Server equiv:
-//   SELECT pm.metric_key, pm.metric_value, pm.recorded_at
-//   FROM performance_metrics pm
-//   JOIN player_matches plm ON plm.id = pm.player_match_id
-//   WHERE plm.player_id = @playerId
-//     AND pm.metric_key = @metricKey
-//     AND pm.recorded_at BETWEEN @from AND @to
-//   ORDER BY pm.recorded_at ASC
+// Registrar la participación de un jugador en un partido (idempotente).
 // ---------------------------------------------------------------------------
-export async function getPlayerMetrics(
+export async function recordAppearance(
+  orgId: string,
   playerId: string,
-  options: {
-    metric_key?: string;
-    from?: Date;
-    to?: Date;
-    limit?: number;
-  } = {}
-) {
-  const { metric_key, from, to, limit = 100 } = options;
+  input: AppearanceInput
+): Promise<{ appearanceId: string; observationsWritten: number }> {
+  return prisma.$transaction(async (tx) => {
+    // El partido y el jugador deben pertenecer a la misma organización.
+    const [player, match] = await Promise.all([
+      tx.player.findFirst({ where: { id: playerId, organizationId: orgId }, select: { id: true } }),
+      tx.match.findFirst({
+        where: { id: input.matchId, organizationId: orgId },
+        select: { id: true },
+      }),
+    ]);
 
-  // Construimos el filtro de fecha para recorded_at
-  const dateFilter: Record<string, Date> = {};
-  if (from) dateFilter.gte = from;
-  if (to) dateFilter.lte = to;
+    if (!player) throw new Error(`Jugador ${playerId} no encontrado en esta organización.`);
+    if (!match) throw new Error(`Partido ${input.matchId} no encontrado en esta organización.`);
 
-  const metrics = await prisma.performanceMetric.findMany({
-    where: {
-      player_match: {
-        player_id: playerId,  // Filtra por jugador a través de la relación
+    // Este spread SÍ es seguro, a diferencia del `...validated.data` que rompió
+    // el Ciclo 1: las claves son la unión literal `CoreMetricColumn`, así que el
+    // compilador las contrasta contra el input de Prisma. Lo prohibido es
+    // esparcir datos del wire, cuyas claves el compilador no conoce.
+    const coreData: Partial<Record<CoreMetricColumn, number>> = input.core ?? {};
+
+    const appearance = await tx.appearance.upsert({
+      where: { playerId_matchId: { playerId, matchId: input.matchId } },
+      update: {
+        minutesPlayed: input.minutesPlayed,
+        positionPlayed: input.positionPlayed,
+        startedMatch: input.startedMatch ?? true,
+        ...coreData,
+        recordedById: input.recordedById,
       },
-      ...(metric_key ? { metric_key } : {}),
-      ...(Object.keys(dateFilter).length > 0
-        ? { recorded_at: dateFilter }
-        : {}),
-    },
-    include: {
-      player_match: {
-        include: {
-          match: {
-            select: { match_date: true, competition: true, season: true },
+      create: {
+        organizationId: orgId,
+        playerId,
+        matchId: input.matchId,
+        minutesPlayed: input.minutesPlayed,
+        positionPlayed: input.positionPlayed,
+        startedMatch: input.startedMatch ?? true,
+        ...coreData,
+        recordedById: input.recordedById,
+      },
+      select: { id: true },
+    });
+
+    let observationsWritten = 0;
+
+    if (input.observations?.length) {
+      // Una observación por (appearance, métrica): reenviar el mismo partido
+      // corrige el valor en vez de duplicarlo.
+      for (const observation of input.observations) {
+        await tx.metricObservation.upsert({
+          where: {
+            appearanceId_metricKey: {
+              appearanceId: appearance.id,
+              metricKey: observation.metricKey,
+            },
           },
-        },
-      },
-    },
-    orderBy: { recorded_at: "asc" },
-    take: limit,
-  });
+          update: { metricValue: observation.metricValue, recordedAt: new Date() },
+          create: {
+            organizationId: orgId,
+            appearanceId: appearance.id,
+            metricKey: observation.metricKey,
+            metricValue: observation.metricValue,
+          },
+        });
+        observationsWritten += 1;
+      }
+    }
 
-  return metrics.map((m) => ({
-    metric_key: m.metric_key,
-    metric_value: m.metric_value,
-    recorded_at: m.recorded_at,
-    match_date: m.player_match.match?.match_date,
-    competition: m.player_match.match?.competition,
-  }));
+    return { appearanceId: appearance.id, observationsWritten };
+  });
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/players/:id/metrics — Registrar nuevas métricas (rol: scout)
-// Primero encuentra o crea el player_match, luego inserta las métricas.
-//
-// SQL Server equiv: 
-//   BEGIN TRANSACTION
-//   IF NOT EXISTS (SELECT 1 FROM player_matches WHERE player_id=@pid AND match_id=@mid)
-//     INSERT INTO player_matches ...
-//   INSERT INTO performance_metrics (metric_key, metric_value, ...) VALUES (...)
-//   COMMIT
+// Serie de participaciones de un jugador (para gráficos de evolución).
 // ---------------------------------------------------------------------------
-export async function recordMetrics(
+export async function getPlayerAppearances(
+  orgId: string,
   playerId: string,
-  matchId: string,
-  minutesPlayed: number,
-  positionPlayed: string | undefined,
-  metrics: MetricInput[]
+  options: { season?: string; from?: Date; to?: Date; limit?: number } = {}
 ) {
-  // Upsert del player_match (transacción implícita via Prisma)
-  const playerMatch = await prisma.playerMatch.upsert({
+  const { season, from, to, limit = 100 } = options;
+
+  const matchFilter: Prisma.MatchWhereInput = {
+    ...(season ? { season } : {}),
+    ...(from || to
+      ? { kickoffAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+      : {}),
+  };
+
+  const appearances = await prisma.appearance.findMany({
     where: {
-      player_id_match_id: { player_id: playerId, match_id: matchId },
+      organizationId: orgId,
+      playerId,
+      ...(Object.keys(matchFilter).length > 0 ? { match: matchFilter } : {}),
     },
-    update: { minutes_played: minutesPlayed, position_played: positionPlayed },
-    create: {
-      player_id: playerId,
-      match_id: matchId,
-      minutes_played: minutesPlayed,
-      position_played: positionPlayed,
+    select: {
+      id: true,
+      minutesPlayed: true,
+      positionPlayed: true,
+      goals: true,
+      assists: true,
+      shots: true,
+      keyPasses: true,
+      dribblesCompleted: true,
+      tacklesWon: true,
+      interceptions: true,
+      pressures: true,
+      match: {
+        select: { id: true, kickoffAt: true, competition: true, season: true, tier: true },
+      },
     },
+    orderBy: { match: { kickoffAt: "asc" } },
+    take: Math.min(limit, 500),
   });
 
-  // Insertar todas las métricas en lote — equivale a bulk INSERT en SQL Server
-  const created = await prisma.performanceMetric.createMany({
-    data: metrics.map((m) => ({
-      player_match_id: playerMatch.id,
-      metric_key: m.metric_key,
-      metric_value: m.metric_value,
-      recorded_at: m.recorded_at ?? new Date(),
-    })),
-  });
-
-  return { player_match_id: playerMatch.id, metrics_created: created.count };
+  return appearances;
 }
 
 // ---------------------------------------------------------------------------
-// Helper: obtiene el promedio de una métrica para un jugador en una temporada
-// SQL Server equiv: SELECT AVG(metric_value) FROM performance_metrics ... GROUP BY metric_key
+// Totales de temporada — UNA sola consulta agregada.
+// Es la entrada del motor de rating (MM-014).
 // ---------------------------------------------------------------------------
-export async function getAverageMetric(
+export async function getSeasonTotals(
+  orgId: string,
   playerId: string,
-  metricKey: string,
-  season?: string
-): Promise<number> {
-  const result = await prisma.performanceMetric.aggregate({
-    where: {
-      metric_key: metricKey,
-      player_match: {
-        player_id: playerId,
-        ...(season ? { match: { season } } : {}),
-      },
-    },
-    _avg: { metric_value: true },
-  });
+  season: string
+): Promise<SeasonTotals | null> {
+  const where: Prisma.AppearanceWhereInput = {
+    organizationId: orgId,
+    playerId,
+    match: { season },
+  };
 
-  return result._avg.metric_value ?? 0;
+  const [aggregate, byPosition] = await Promise.all([
+    prisma.appearance.aggregate({
+      where,
+      _count: { _all: true },
+      _sum: {
+        minutesPlayed: true,
+        goals: true,
+        assists: true,
+        shots: true,
+        keyPasses: true,
+        passesAttempted: true,
+        passesCompleted: true,
+        progressivePasses: true,
+        dribblesAttempted: true,
+        dribblesCompleted: true,
+        tacklesWon: true,
+        interceptions: true,
+        aerialDuelsWon: true,
+        aerialDuelsTotal: true,
+        pressures: true,
+      },
+    }),
+    prisma.appearance.groupBy({
+      by: ["positionPlayed"],
+      where,
+      _sum: { minutesPlayed: true },
+      orderBy: { _sum: { minutesPlayed: "desc" } },
+      take: 1,
+    }),
+  ]);
+
+  if (aggregate._count._all === 0) return null;
+
+  const sums = aggregate._sum;
+
+  const totals = CORE_METRIC_COLUMNS.reduce(
+    (acc, column) => {
+      acc[column] = sums[column] ?? 0;
+      return acc;
+    },
+    {} as Record<CoreMetricColumn, number>
+  );
+
+  return {
+    playerId,
+    season,
+    matches: aggregate._count._all,
+    minutesPlayed: sums.minutesPlayed ?? 0,
+    primaryPosition: byPosition[0]?.positionPlayed ?? null,
+    totals,
+  };
 }

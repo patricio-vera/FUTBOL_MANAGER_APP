@@ -1,135 +1,124 @@
 // =============================================================================
-// RATING AGGREGATOR SERVICE — Optimizado y Corregido
+// RATING SERVICE — lectura de ratings publicados
+// =============================================================================
+// NOTA DE ALCANCE (MM-001).
+//
+// La función `computeAndPersistRating` del Ciclo 1 se ha ELIMINADO, no migrado.
+// Motivos, en orden de gravedad:
+//
+//   1. No se invocaba desde ningún punto del código, así que la tabla de
+//      ratings estuvo siempre vacía.
+//   2. Su matemática era inválida: `Math.min(Math.round(valorCrudo), 100)`
+//      convierte `goals_per90 = 0.8` en `1`, y sumaba métricas con unidades
+//      incompatibles (conteos, tasas y scores) ponderadas con pesos que sumaban
+//      4,4 en lugar de 1,0.
+//   3. Sus pesos vivían en una constante de TypeScript que contradecía los
+//      pesos sembrados en la base para las mismas posiciones.
+//
+// El cálculo correcto (per-90 -> percentil contra cohorte -> media ponderada con
+// pesos que suman 1,0, leídos de `RatingModel`) es el ticket MM-014. Este
+// archivo solo LEE lo que ese motor publique.
 // =============================================================================
 
+import { Prisma, Position } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { getAverageMetric } from "./metrics.service";
 
-export interface RadarDataPoint {
-  axis: string;       
-  value: number;      
-  maxValue: number;   
+/**
+ * Forma de cada eje dentro de `PlayerRating.radarSnapshot`.
+ * El motor de MM-014 debe escribir exactamente esta estructura.
+ */
+export interface RadarAxis {
+  metricKey: string;
+  axisLabel: string;
+  /** Valor normalizado a 90 minutos. */
+  per90: number;
+  /** Posición del jugador en su cohorte, 0–100. Es lo que se dibuja. */
+  percentile: number;
+  /** Tamaño de la cohorte contra la que se comparó. */
+  sampleSize: number;
 }
 
-const POSITION_METRIC_CONFIG: Record<
-  string,
-  Array<{ metric_key: string; label: string; weight: number }>
-> = {
-  LW: [
-    { metric_key: "dribbles_completed", label: "Dribbling", weight: 0.9 },
-    { metric_key: "pace_score",         label: "Pace",      weight: 0.9 },
-    { metric_key: "goals_per90",        label: "Shooting",  weight: 0.7 },
-    { metric_key: "pressing_score",     label: "Pressing",  weight: 0.6 },
-    { metric_key: "key_passes",         label: "Passing",   weight: 0.6 },
-    { metric_key: "positioning",        label: "Positioning", weight: 0.7 },
-  ],
-  RW: [
-    { metric_key: "dribbles_completed", label: "Dribbling", weight: 0.9 },
-    { metric_key: "pace_score",         label: "Pace",      weight: 0.9 },
-    { metric_key: "goals_per90",        label: "Shooting",  weight: 0.7 },
-    { metric_key: "pressing_score",     label: "Pressing",  weight: 0.6 },
-    { metric_key: "key_passes",         label: "Passing",   weight: 0.6 },
-    { metric_key: "positioning",        label: "Positioning", weight: 0.7 },
-  ],
-  CM: [
-    { metric_key: "key_passes",         label: "Passing",   weight: 0.9 },
-    { metric_key: "pressing_score",     label: "Pressing",  weight: 0.8 },
-    { metric_key: "dribbles_completed", label: "Dribbling", weight: 0.6 },
-    { metric_key: "goals_per90",        label: "Shooting",  weight: 0.5 },
-    { metric_key: "tackles_won",        label: "Defending", weight: 0.6 },
-    { metric_key: "vision_score",       label: "Vision",    weight: 0.9 },
-  ],
-  DM: [
-    { metric_key: "tackles_won",        label: "Defending", weight: 0.95 },
-    { metric_key: "pressing_score",     label: "Pressing",  weight: 0.85 },
-    { metric_key: "key_passes",         label: "Passing",   weight: 0.7 },
-    { metric_key: "dribbles_completed", label: "Dribbling", weight: 0.4 },
-    { metric_key: "positioning",        label: "Positioning", weight: 0.9 },
-    { metric_key: "aerial_duels",       label: "Aerial",    weight: 0.7 },
-  ],
-  ST: [
-    { metric_key: "goals_per90",        label: "Shooting",  weight: 0.95 },
-    { metric_key: "positioning",        label: "Positioning", weight: 0.9 },
-    { metric_key: "pace_score",         label: "Pace",      weight: 0.7 },
-    { metric_key: "aerial_duels",       label: "Aerial",    weight: 0.75 },
-    { metric_key: "dribbles_completed", label: "Dribbling", weight: 0.5 },
-    { metric_key: "pressing_score",     label: "Pressing",  weight: 0.5 },
-  ],
-  CB: [
-    { metric_key: "tackles_won",        label: "Defending", weight: 0.95 },
-    { metric_key: "aerial_duels",       label: "Aerial",    weight: 0.9 },
-    { metric_key: "positioning",        label: "Positioning", weight: 0.9 },
-    { metric_key: "pace_score",         label: "Pace",      weight: 0.5 },
-    { metric_key: "key_passes",         label: "Passing",   weight: 0.4 },
-    { metric_key: "pressing_score",     label: "Pressing",  weight: 0.5 },
-  ],
-};
+/** Convierte el JSON de Prisma en ejes tipados, descartando lo que no encaje. */
+export function parseRadarSnapshot(snapshot: Prisma.JsonValue | null): RadarAxis[] {
+  if (!Array.isArray(snapshot)) return [];
 
-const DEFAULT_METRICS = POSITION_METRIC_CONFIG.CM;
+  return snapshot.flatMap((entry): RadarAxis[] => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return [];
 
-export async function computeAndPersistRating(
-  playerId: string,
-  position: string,
-  season: string
-): Promise<void> {
-  const metricConfig = POSITION_METRIC_CONFIG[position] ?? DEFAULT_METRICS;
+    const axis = entry as Record<string, unknown>;
+    const { metricKey, axisLabel, per90, percentile, sampleSize } = axis;
 
-  const radarData: RadarDataPoint[] = await Promise.all(
-    metricConfig.map(async (config) => {
-      const avgValue = await getAverageMetric(playerId, config.metric_key, season);
-      const normalizedValue = Math.min(Math.round(avgValue), 100);
+    if (typeof metricKey !== "string" || typeof axisLabel !== "string") return [];
+    if (typeof per90 !== "number" || typeof percentile !== "number") return [];
 
-      return {
-        axis: config.label,
-        value: normalizedValue,
-        maxValue: 100,
-      };
-    })
-  );
-
-  const totalWeight = metricConfig.reduce((sum, m) => sum + m.weight, 0);
-  const weightedSum = radarData.reduce((sum, point, i) => {
-    return sum + point.value * metricConfig[i].weight;
-  }, 0);
-  const overallRating = totalWeight > 0 ? Math.round((weightedSum / totalWeight) * 10) / 10 : 0;
-
- // ── Guardar o actualizar en la base de datos con el "pase libre" (as any)
-  await prisma.aggregatedRating.upsert({
-    where: {
-      playerId_season_position: { playerId, season, position },
-    } as any, // ← El cambio va exactamente aquí, antes de la coma
-    update: {
-      overallRating: overallRating,
-      radarSnapshot: radarData as unknown as object[],
-      computedAt: new Date(),
-    },
-    create: {
-      playerId: playerId,
-      season,
-      position,
-      overallRating: overallRating,
-      radarSnapshot: radarData as unknown as object[],
-    },
+    return [
+      {
+        metricKey,
+        axisLabel,
+        per90,
+        percentile,
+        sampleSize: typeof sampleSize === "number" ? sampleSize : 0,
+      },
+    ];
   });
 }
 
-export async function getTopRatings(
-  position?: string,
-  season?: string,
-  limit = 10
-) {
-  // ── CORREGIDO: Mapeo de campos de consulta y relaciones del Player
-  return prisma.aggregatedRating.findMany({
+export interface TopRatingsOptions {
+  season?: string;
+  position?: Position;
+  limit?: number;
+  /** Incluir ratings provisionales (muestra por debajo del umbral de minutos). */
+  includeProvisional?: boolean;
+}
+
+/**
+ * Ranking servido directamente desde `player_ratings`: cero cómputo por request.
+ * Los ratings provisionales quedan fuera por defecto — publicar el rating de un
+ * jugador con 40 minutos junto al de uno con 2.700 es engañoso.
+ */
+export async function getTopRatings(orgId: string, options: TopRatingsOptions = {}) {
+  const { season, position, limit = 10, includeProvisional = false } = options;
+
+  return prisma.playerRating.findMany({
     where: {
-      ...(position ? { position } : {}),
+      organizationId: orgId,
       ...(season ? { season } : {}),
+      ...(position ? { position } : {}),
+      ...(includeProvisional ? {} : { isProvisional: false }),
+      player: { deletedAt: null },
     },
-    include: {
+    select: {
+      id: true,
+      season: true,
+      position: true,
+      overallRating: true,
+      sampleMinutes: true,
+      sampleMatches: true,
+      isProvisional: true,
+      computedAt: true,
+      ratingModel: { select: { name: true, version: true } },
       player: {
-        select: { id: true, fullName: true, nationality: true, photoUrl: true },
+        select: { id: true, fullName: true, knownAs: true, nationality: true, photoUrl: true },
       },
     },
     orderBy: { overallRating: "desc" },
-    take: limit,
+    take: Math.min(limit, 50),
+  });
+}
+
+/** Rating vigente de un jugador en una temporada, si existe. */
+export async function getPlayerRating(orgId: string, playerId: string, season: string) {
+  return prisma.playerRating.findFirst({
+    where: { organizationId: orgId, playerId, season },
+    select: {
+      overallRating: true,
+      radarSnapshot: true,
+      sampleMinutes: true,
+      sampleMatches: true,
+      isProvisional: true,
+      computedAt: true,
+      ratingModel: { select: { name: true, version: true } },
+    },
+    orderBy: { computedAt: "desc" },
   });
 }
