@@ -18,10 +18,11 @@ import {
 import { apiError, handleUnexpected } from "@/lib/api/respond";
 
 interface RouteContext {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
-export async function GET(request: NextRequest, { params }: RouteContext) {
+export async function GET(request: NextRequest, props: RouteContext) {
+  const params = await props.params;
   try {
     const parsed = playerAppearancesQuerySchema.safeParse(
       Object.fromEntries(request.nextUrl.searchParams)
@@ -40,7 +41,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
   }
 }
 
-export async function POST(request: NextRequest, { params }: RouteContext) {
+export async function POST(request: NextRequest, props: RouteContext) {
+  const params = await props.params;
   try {
     const parsed = recordAppearanceBodySchema.safeParse(await request.json());
 

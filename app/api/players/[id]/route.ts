@@ -15,10 +15,11 @@ import { updatePlayerBodySchema, toUpdatePlayerInput } from "@/lib/api/schemas";
 import { apiError, handleUnexpected } from "@/lib/api/respond";
 
 interface RouteContext {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
-export async function GET(_request: NextRequest, { params }: RouteContext) {
+export async function GET(_request: NextRequest, props: RouteContext) {
+  const params = await props.params;
   try {
     const orgId = await getActiveOrgId();
     const player = await getPlayerById(orgId, params.id);
@@ -33,7 +34,8 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
   }
 }
 
-export async function PUT(request: NextRequest, { params }: RouteContext) {
+export async function PUT(request: NextRequest, props: RouteContext) {
+  const params = await props.params;
   try {
     const parsed = updatePlayerBodySchema.safeParse(await request.json());
 
@@ -54,7 +56,8 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: RouteContext) {
+export async function DELETE(_request: NextRequest, props: RouteContext) {
+  const params = await props.params;
   try {
     const orgId = await getActiveOrgId();
     const deleted = await softDeletePlayer(orgId, params.id);

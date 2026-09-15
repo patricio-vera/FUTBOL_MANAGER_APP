@@ -27,10 +27,11 @@ import { isOptimizableImageUrl } from "@/lib/domain/images";
 export const dynamic = "force-dynamic";
 
 interface PageProps {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
-export default async function PlayerProfilePage({ params }: PageProps) {
+export default async function PlayerProfilePage(props: PageProps) {
+  const params = await props.params;
   const orgId = await getActiveOrgId();
   const player = await getPlayerById(orgId, params.id);
 

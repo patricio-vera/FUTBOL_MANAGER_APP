@@ -17,7 +17,6 @@ import { env } from "@/lib/env";
 
 // Extendemos el tipo global de Node.js para incluir el campo prisma
 declare global {
-  // eslint-disable-next-line no-var
   var prisma: PrismaClient | undefined;
 }
 
