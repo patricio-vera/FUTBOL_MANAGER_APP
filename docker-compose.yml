@@ -1,0 +1,12 @@
+name: managermetrics
+services:
+  db:
+    image: postgres:16
+    container_name: mm-postgres
+    environment:
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: managermetrics
+    ports: ["5433:5432"]
+    volumes: ["mm-pgdata:/var/lib/postgresql/data"]
+volumes:
+  mm-pgdata:

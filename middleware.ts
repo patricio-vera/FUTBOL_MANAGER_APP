@@ -17,6 +17,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
+import { env } from "@/lib/env";
 
 // ---------------------------------------------------------------------------
 // CONFIGURACIÓN DE RUTAS PÚBLICAS (solo lectura — rol: guest)
@@ -42,8 +43,9 @@ const SCOUT_ALLOWED_ROUTES: RegExp[] = [
 // Helper: obtiene el JWT secret como Uint8Array (requerido por jose en Edge)
 // ---------------------------------------------------------------------------
 function getJwtSecret(): Uint8Array {
-  const secret = process.env.JWT_SECRET ?? process.env.NEXTAUTH_SECRET ?? "";
-  return new TextEncoder().encode(secret);
+  // MM-004: el secreto ya viene validado (mínimo 32 caracteres) por lib/env.
+  // El fallback a cadena vacía que había aquí dejaba arrancar la app sin secreto.
+  return new TextEncoder().encode(env.sessionSecret);
 }
 
 // ---------------------------------------------------------------------------

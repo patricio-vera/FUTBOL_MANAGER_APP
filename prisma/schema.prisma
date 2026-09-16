@@ -1,103 +1,576 @@
+// =============================================================================
+// ManagerMetrics — MODELO DE DATOS CICLO 2 (SaaS multi-club)
+// =============================================================================
+// Cambios estructurales respecto al schema actual:
+//
+//  1. MULTI-TENANCY REAL: toda tabla de negocio lleva `orgId` + índice compuesto.
+//     La aplicación NO es la fuente de la seguridad: se acompaña de políticas
+//     Row Level Security en Postgres (ver 001_rls_policies.sql).
+//  2. @@map / @map EXPLÍCITOS: elimina la deriva actual entre schema.prisma
+//     (camelCase, sin mapping) y la migración SQL (snake_case). Regla del
+//     proyecto: Prisma en camelCase, Postgres en snake_case, siempre mapeado.
+//  3. ENUMS en vez de String libre: posición, rol, estado de contrato, etc.
+//  4. DINERO EN Decimal, nunca Float.
+//  5. MÉTRICAS HÍBRIDAS: columnas tipadas para el hot-path (radar, ranking)
+//     + EAV acotado (MetricObservation) para la cola larga de eventos.
+//  6. MOTOR DE RATING VERSIONADO: los pesos viven en la base (RatingModel),
+//     no hardcodeados en TypeScript, y cada rating referencia la versión
+//     de modelo con la que fue calculado → resultados reproducibles y auditables.
+//  7. COHORTES DE NORMALIZACIÓN: MetricCohortStat permite percentiles reales
+//     contra pares de la misma posición/competición/temporada, en vez de
+//     truncar el valor crudo con Math.min(x, 100).
+//  8. AUDITORÍA Y BORRADO LÓGICO: nada de DELETE físico sobre historial.
+// =============================================================================
+
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {
   provider  = "postgresql"
+  // Runtime: cadena POOLED de Neon (pgbouncer=true). Migraciones: cadena DIRECTA.
   url       = env("DATABASE_URL")
-  directUrl = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
-model Player {
-  id                String             @id @default(uuid())
-  fullName          String             // ¡Corregido! Ya no es @unique para evitar colisiones de nombres reales
-  nationality       String
-  age               Int
-  position          String
-  photoUrl          String?
-  createdAt         DateTime           @default(now())
-  playerMatches     PlayerMatch[]
-  aggregatedRatings AggregatedRating[]
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum Position {
+  GK
+  CB
+  LB
+  RB
+  DM
+  CM
+  AM
+  LW
+  RW
+  SS
+  ST
+}
+
+enum Foot {
+  LEFT
+  RIGHT
+  BOTH
+}
+
+enum OrgPlan {
+  FREE
+  CLUB
+  ACADEMY
+  ENTERPRISE
+}
+
+enum MemberRole {
+  OWNER // facturación + gestión de miembros
+  ADMIN // configuración del club, modelos de rating
+  ANALYST // registra partidos y métricas
+  SCOUT // registra observaciones, gestiona listas
+  VIEWER // solo lectura
+}
+
+enum ContractStatus {
+  ACTIVE
+  EXPIRED
+  TERMINATED
+  LOAN
+}
+
+enum ApplicationStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum MetricUnit {
+  COUNT
+  PER_90
+  PERCENT
+  SECONDS
+  METERS
+  SCORE_0_100
+}
+
+// =============================================================================
+// TENANCY E IDENTIDAD
+// =============================================================================
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  country   String? // ISO 3166-1 alpha-2
+  plan      OrgPlan  @default(FREE)
+  seatLimit Int      @default(3) @map("seat_limit")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  memberships       Membership[]
+  players           Player[]
+  matches           Match[]
   contracts         Contract[]
+  ratingModels      RatingModel[]
+  playerRatings     PlayerRating[]
+  scoutApplications ScoutApplication[]
+  shortlists        Shortlist[]
+  auditLogs         AuditLog[]
+  apiKeys           ApiKey[]
+
+  @@index([deletedAt])
+  @@map("organizations")
+}
+
+model Membership {
+  id             String     @id @default(cuid())
+  organizationId String     @map("organization_id")
+  userId         String     @map("user_id")
+  role           MemberRole @default(VIEWER)
+  invitedAt      DateTime   @default(now()) @map("invited_at")
+  acceptedAt     DateTime?  @map("accepted_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("memberships")
+}
+
+// --- Modelos requeridos por Auth.js v5 (faltaban por completo en el schema actual)
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime? @map("email_verified")
+  image         String?
+  passwordHash  String?   @map("password_hash") // Argon2id; null si solo usa OAuth
+  mfaSecret     String?   @map("mfa_secret")
+  lastLoginAt   DateTime? @map("last_login_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  accounts    Account[]
+  sessions    Session[]
+  memberships Membership[]
+  auditLogs   AuditLog[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Session {
+  id             String   @id @default(cuid())
+  sessionToken   String   @unique @map("session_token")
+  userId         String   @map("user_id")
+  expires        DateTime
+  activeOrgId    String?  @map("active_org_id") // organización seleccionada en la sesión
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model ApiKey {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  name           String
+  hashedKey      String    @unique @map("hashed_key") // SHA-256 del token; nunca el token en claro
+  prefix         String // primeros 8 chars, para mostrar en UI
+  scopes         String[]
+  lastUsedAt     DateTime? @map("last_used_at")
+  expiresAt      DateTime? @map("expires_at")
+  revokedAt      DateTime? @map("revoked_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("api_keys")
+}
+
+// =============================================================================
+// DOMINIO: JUGADORES, PARTIDOS, MÉTRICAS
+// =============================================================================
+
+model Player {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+
+  fullName    String    @map("full_name")
+  knownAs     String?   @map("known_as")
+  dateOfBirth DateTime? @map("date_of_birth") @db.Date // edad se DERIVA, no se almacena
+  nationality String? // ISO 3166-1 alpha-2
+  position    Position
+  altPosition Position? @map("alt_position")
+  foot        Foot?
+  heightCm    Int?      @map("height_cm")
+  photoUrl    String?   @map("photo_url")
+
+  // Trazabilidad de origen del dato (proveedor externo, carga manual, scraping propio)
+  sourceRef  String? @map("source_ref")
+  externalIds Json?  @map("external_ids") // { "wyscout": 12345, "transfermarkt": "..." }
+
+  // Cumplimiento: consentimiento y datos de menores (art. 8 GDPR / Ley 19.628 CL)
+  isMinor          Boolean   @default(false) @map("is_minor")
+  consentGrantedAt DateTime? @map("consent_granted_at")
+  consentGrantedBy String?   @map("consent_granted_by")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at") // borrado lógico: nunca perder historial
+
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appearances    Appearance[]
+  ratings        PlayerRating[]
+  contracts      Contract[]
+  shortlistItems ShortlistItem[]
+
+  @@unique([organizationId, fullName, dateOfBirth])
+  @@index([organizationId, position, deletedAt])
+  @@index([organizationId, deletedAt])
+  @@map("players")
 }
 
 model Match {
-  id            String        @id @default(uuid())
-  homeTeam      String
-  awayTeam      String
-  homeScore     Int           @default(0)
-  awayScore     Int           @default(0)
-  matchDate     DateTime
-  competition   String
-  season        String
-  playerMatches PlayerMatch[]
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+
+  homeTeam    String   @map("home_team")
+  awayTeam    String   @map("away_team")
+  homeScore   Int?     @map("home_score")
+  awayScore   Int?     @map("away_score")
+  kickoffAt   DateTime @map("kickoff_at")
+  competition String
+  // Nivel de competición: pondera la comparación entre ligas (1 = élite)
+  tier        Int      @default(3)
+  season      String // formato canónico "2025-26"
+  venue       String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appearances  Appearance[]
+
+  @@index([organizationId, season, kickoffAt(sort: Desc)])
+  @@index([organizationId, competition, season])
+  @@map("matches")
 }
 
-model PlayerMatch {
-  id                 String              @id @default(uuid())
-  playerId           String
-  matchId            String
-  minutesPlayed      Int
-  positionPlayed     String
-  player             Player              @relation(fields: [playerId], references: [id])
-  match              Match               @relation(fields: [matchId], references: [id])
-  performanceMetrics PerformanceMetric[]
+/// Participación de un jugador en un partido.
+/// Columnas tipadas para las métricas del hot-path (radar + ranking).
+/// La cola larga de eventos va en MetricObservation.
+model Appearance {
+  id             String @id @default(cuid())
+  organizationId String @map("organization_id")
+  playerId       String @map("player_id")
+  matchId        String @map("match_id")
 
-  // Índices esenciales para buscar rápido los partidos de un jugador o los jugadores de un partido
-  @@index([playerId])
-  @@index([matchId])
+  minutesPlayed  Int      @map("minutes_played")
+  positionPlayed Position @map("position_played")
+  startedMatch   Boolean  @default(true) @map("started_match")
+
+  // --- Hot path: métricas núcleo, tipadas y consultables sin JOIN a EAV ---
+  goals            Int     @default(0)
+  assists          Int     @default(0)
+  xg               Decimal @default(0) @db.Decimal(6, 3)
+  xa               Decimal @default(0) @db.Decimal(6, 3)
+  shots            Int     @default(0)
+  keyPasses        Int     @default(0) @map("key_passes")
+  passesAttempted  Int     @default(0) @map("passes_attempted")
+  passesCompleted  Int     @default(0) @map("passes_completed")
+  progressivePasses Int    @default(0) @map("progressive_passes")
+  dribblesAttempted Int    @default(0) @map("dribbles_attempted")
+  dribblesCompleted Int    @default(0) @map("dribbles_completed")
+  tacklesWon       Int     @default(0) @map("tackles_won")
+  interceptions    Int     @default(0)
+  aerialDuelsWon   Int     @default(0) @map("aerial_duels_won")
+  aerialDuelsTotal Int     @default(0) @map("aerial_duels_total")
+  pressures        Int     @default(0)
+  distanceKm       Decimal @default(0) @map("distance_km") @db.Decimal(5, 2)
+  topSpeedKmh      Decimal @default(0) @map("top_speed_kmh") @db.Decimal(5, 2)
+
+  recordedById String?  @map("recorded_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  player       Player              @relation(fields: [playerId], references: [id], onDelete: Restrict)
+  match        Match               @relation(fields: [matchId], references: [id], onDelete: Restrict)
+  observations MetricObservation[]
+
+  @@unique([playerId, matchId])
+  @@index([organizationId, playerId])
+  @@index([organizationId, matchId])
+  @@map("appearances")
 }
 
-model PerformanceMetric {
-  id            String      @id @default(uuid())
-  playerMatchId String
-  metricKey     String
-  metricValue   Float
-  recordedAt    DateTime    @default(now())
-  playerMatch   PlayerMatch @relation(fields: [playerMatchId], references: [id])
+/// Registro de métricas de la cola larga (EAV acotado por MetricDefinition).
+/// No se usa para el radar ni el ranking: esos leen columnas tipadas.
+model MetricObservation {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  appearanceId   String   @map("appearance_id")
+  metricKey      String   @map("metric_key")
+  metricValue    Decimal  @map("metric_value") @db.Decimal(12, 4)
+  recordedAt     DateTime @default(now()) @map("recorded_at")
 
-  // ¡El índice más importante del proyecto! Evita que las consultas de métricas colapsen el servidor
-  @@index([playerMatchId])
+  appearance Appearance       @relation(fields: [appearanceId], references: [id], onDelete: Cascade)
+  definition MetricDefinition @relation(fields: [metricKey], references: [key], onDelete: Restrict)
+
+  @@unique([appearanceId, metricKey])
+  @@index([organizationId, metricKey, recordedAt])
+  @@map("metric_observations")
 }
 
-model PositionWeight {
-  id        String @id @default(uuid())
-  position  String
-  metricKey String
-  weight    Float
+/// Catálogo global de métricas. Convierte el string libre actual
+/// ("metric_key": z.string()) en un vocabulario cerrado y validable.
+model MetricDefinition {
+  key           String     @id
+  label         String
+  unit          MetricUnit
+  higherIsBetter Boolean   @default(true) @map("higher_is_better")
+  domainMin     Decimal?   @map("domain_min") @db.Decimal(12, 4)
+  domainMax     Decimal?   @map("domain_max") @db.Decimal(12, 4)
+  description   String?
 
-  // Permite buscar rápido los pesos por posición al recalcular los radares
-  @@index([position])
+  observations MetricObservation[]
+  weights      RatingModelWeight[]
+  cohortStats  MetricCohortStat[]
+
+  @@map("metric_definitions")
 }
 
-model AggregatedRating {
-  id            String   @id @default(uuid())
-  playerId      String
-  season        String
-  position      String
-  overallRating Float
-  radarSnapshot Json
-  computedAt    DateTime @default(now())
-  player        Player   @relation(fields: [playerId], references: [id])
-  
-  // Agregado aquí: Controla que no se duplique un jugador en la misma temporada y posición
-  @@unique([playerId, season, position], name: "playerId_season_position")
+// =============================================================================
+// MOTOR DE RATING (versionado y auditable)
+// =============================================================================
 
-  // Optimiza la carga del perfil del jugador y sus rankings por temporada
-  @@index([playerId])
-  @@index([season])
+/// Un modelo de rating es una versión inmutable del conjunto de pesos.
+/// Cambiar los pesos crea una versión nueva; los ratings ya calculados
+/// siguen apuntando a la versión con la que se produjeron.
+model RatingModel {
+  id             String    @id @default(cuid())
+  organizationId String?   @map("organization_id") // null = modelo global de la plataforma
+  name           String
+  version        Int
+  isActive       Boolean   @default(false) @map("is_active")
+  minMinutes     Int       @default(450) @map("min_minutes") // umbral de muestra mínima
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  archivedAt     DateTime? @map("archived_at")
+
+  organization Organization?       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  weights      RatingModelWeight[]
+  ratings      PlayerRating[]
+
+  @@unique([organizationId, name, version])
+  @@index([organizationId, isActive])
+  @@map("rating_models")
 }
+
+model RatingModelWeight {
+  id            String   @id @default(cuid())
+  ratingModelId String   @map("rating_model_id")
+  position      Position
+  metricKey     String   @map("metric_key")
+  axisLabel     String   @map("axis_label")
+  weight        Decimal  @db.Decimal(5, 4) // los pesos de una posición deben sumar 1.0000
+
+  ratingModel RatingModel      @relation(fields: [ratingModelId], references: [id], onDelete: Cascade)
+  definition  MetricDefinition @relation(fields: [metricKey], references: [key], onDelete: Restrict)
+
+  @@unique([ratingModelId, position, metricKey])
+  @@index([ratingModelId, position])
+  @@map("rating_model_weights")
+}
+
+/// Distribución de una métrica en una cohorte (posición × temporada × nivel de liga).
+/// Es lo que permite convertir un valor crudo en percentil real.
+/// Se recalcula por job programado, no por request.
+model MetricCohortStat {
+  id          String   @id @default(cuid())
+  season      String
+  position    Position
+  tier        Int
+  metricKey   String   @map("metric_key")
+  sampleSize  Int      @map("sample_size")
+  mean        Decimal  @db.Decimal(12, 4)
+  stddev      Decimal  @db.Decimal(12, 4)
+  p5          Decimal  @db.Decimal(12, 4)
+  p25         Decimal  @db.Decimal(12, 4)
+  p50         Decimal  @db.Decimal(12, 4)
+  p75         Decimal  @db.Decimal(12, 4)
+  p95         Decimal  @db.Decimal(12, 4)
+  computedAt  DateTime @default(now()) @map("computed_at")
+
+  definition MetricDefinition @relation(fields: [metricKey], references: [key], onDelete: Cascade)
+
+  @@unique([season, position, tier, metricKey])
+  @@index([metricKey, season])
+  @@map("metric_cohort_stats")
+}
+
+model PlayerRating {
+  id             String @id @default(cuid())
+  organizationId String @map("organization_id")
+  playerId       String @map("player_id")
+  ratingModelId  String @map("rating_model_id")
+
+  season   String
+  position Position
+
+  overallRating Decimal @map("overall_rating") @db.Decimal(4, 1) // 0.0 – 100.0
+  /// [RadarAxis[]] — { metricKey, axisLabel, per90, percentile, sampleSize }
+  radarSnapshot Json    @map("radar_snapshot")
+
+  sampleMinutes  Int      @map("sample_minutes")
+  sampleMatches  Int      @map("sample_matches")
+  isProvisional  Boolean  @default(true) @map("is_provisional") // bajo minMinutes del modelo
+  computedAt     DateTime @default(now()) @map("computed_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  player       Player       @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  ratingModel  RatingModel  @relation(fields: [ratingModelId], references: [id], onDelete: Restrict)
+
+  @@unique([playerId, season, position, ratingModelId])
+  @@index([organizationId, season, position, overallRating(sort: Desc)])
+  @@map("player_ratings")
+}
+
+// =============================================================================
+// CONTRATOS, LISTAS DE SEGUIMIENTO, SOLICITUDES
+// =============================================================================
 
 model Contract {
-  id             String   @id @default(uuid())
-  playerId       String
+  id             String         @id @default(cuid())
+  organizationId String         @map("organization_id")
+  playerId       String         @map("player_id")
   club           String
-  startDate      DateTime
-  endDate        DateTime
-  marketValueEur Float
-  status         String   @default("active")
-  player         Player   @relation(fields: [playerId], references: [id])
+  startDate      DateTime       @map("start_date") @db.Date
+  endDate        DateTime       @map("end_date") @db.Date
+  marketValue    Decimal?       @map("market_value") @db.Decimal(14, 2)
+  currency       String         @default("EUR") @db.Char(3)
+  releaseClause  Decimal?       @map("release_clause") @db.Decimal(14, 2)
+  status         ContractStatus @default(ACTIVE)
+  createdAt      DateTime       @default(now()) @map("created_at")
 
-  // Agiliza la búsqueda financiera y estados contractuales
-  @@index([playerId])
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  player       Player       @relation(fields: [playerId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, playerId, status])
+  @@index([organizationId, endDate])
+  @@map("contracts")
+}
+
+model Shortlist {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String
+  description    String?
+  createdById    String?  @map("created_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  items        ShortlistItem[]
+
+  @@index([organizationId])
+  @@map("shortlists")
+}
+
+model ShortlistItem {
+  id          String   @id @default(cuid())
+  shortlistId String   @map("shortlist_id")
+  playerId    String   @map("player_id")
+  note        String?
+  priority    Int      @default(3)
+  addedAt     DateTime @default(now()) @map("added_at")
+
+  shortlist Shortlist @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  player    Player    @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([shortlistId, playerId])
+  @@map("shortlist_items")
+}
+
+/// Solicitud de acceso de ojeador/agente. Reemplaza el formulario decorativo
+/// de /reclutamiento, que hoy no persiste nada ni valida la licencia.
+model ScoutApplication {
+  id             String            @id @default(cuid())
+  organizationId String?           @map("organization_id")
+  fullName       String            @map("full_name")
+  email          String
+  clubOrAgency   String            @map("club_or_agency")
+  licenseNumber  String            @map("license_number")
+  licenseCountry String?           @map("license_country")
+  motivation     String?
+  status         ApplicationStatus @default(PENDING)
+  reviewedById   String?           @map("reviewed_by_id")
+  reviewedAt     DateTime?         @map("reviewed_at")
+  rejectionReason String?          @map("rejection_reason")
+  submittedIp    String?           @map("submitted_ip")
+  createdAt      DateTime          @default(now()) @map("created_at")
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([email])
+  @@map("scout_applications")
+}
+
+// =============================================================================
+// AUDITORÍA
+// =============================================================================
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  userId         String?  @map("user_id")
+  action         String // "player.update", "rating.recompute", "member.invite"
+  entityType     String   @map("entity_type")
+  entityId       String   @map("entity_id")
+  /// Diff { before, after } — nunca datos sensibles en claro
+  changes        Json?
+  ipAddress      String?  @map("ip_address")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([organizationId, entityType, entityId])
+  @@map("audit_logs")
 }

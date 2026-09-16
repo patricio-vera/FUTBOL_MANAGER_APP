@@ -1,29 +1,38 @@
 // =============================================================================
-// ROUTE HANDLER: GET /api/ratings/top
+// GET /api/ratings/top — ranking servido desde player_ratings
 // =============================================================================
-// Público (rol: guest) — Top 10 jugadores por posición y temporada.
-// Sirve directamente desde aggregated_ratings → cero cómputo por request.
+// Cero cómputo por request: el motor de rating (MM-014) publica en la tabla,
+// este endpoint solo lee. Los ratings provisionales quedan fuera salvo que se
+// pidan explícitamente.
 // =============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
+import { getActiveOrgId } from "@/lib/auth/active-org";
 import { getTopRatings } from "@/lib/services/rating-aggregator.service";
+import { topRatingsQuerySchema } from "@/lib/api/schemas";
+import { apiError, handleUnexpected } from "@/lib/api/respond";
 
-// ---------------------------------------------------------------------------
-// GET /api/ratings/top?position=LW&season=2024-25&limit=10
-// SQL equiv: SELECT TOP 10 ... FROM aggregated_ratings ORDER BY overall_rating DESC
-// ---------------------------------------------------------------------------
 export async function GET(request: NextRequest) {
-  const { searchParams } = request.nextUrl;
-
-  const position = searchParams.get("position") ?? undefined;
-  const season   = searchParams.get("season")   ?? undefined;
-  const limit    = Math.min(Number(searchParams.get("limit") ?? "10"), 50);
-
   try {
-    const ratings = await getTopRatings(position, season, limit);
+    const parsed = topRatingsQuerySchema.safeParse(
+      Object.fromEntries(request.nextUrl.searchParams)
+    );
+
+    if (!parsed.success) {
+      return apiError("VALIDATION_ERROR", "Parámetros inválidos", parsed.error.flatten());
+    }
+
+    const orgId = await getActiveOrgId();
+
+    const ratings = await getTopRatings(orgId, {
+      season: parsed.data.season,
+      position: parsed.data.position,
+      limit: parsed.data.limit,
+      includeProvisional: parsed.data.include_provisional,
+    });
+
     return NextResponse.json({ data: ratings, count: ratings.length });
   } catch (error) {
-    console.error("[GET /api/ratings/top]", error);
-    return NextResponse.json({ error: "Error interno" }, { status: 500 });
+    return handleUnexpected("GET /api/ratings/top", error);
   }
 }

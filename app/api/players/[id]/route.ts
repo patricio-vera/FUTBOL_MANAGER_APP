@@ -1,82 +1,73 @@
 // =============================================================================
-// ROUTE HANDLER: GET /api/players/:id  |  PUT /api/players/:id  |  DELETE /api/players/:id
+// GET    /api/players/:id
+// PUT    /api/players/:id
+// DELETE /api/players/:id   — baja LÓGICA, no física
 // =============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
-import { getPlayerById, updatePlayer, deletePlayer,} from "@/lib/services/player.service";
+import { getActiveOrgId } from "@/lib/auth/active-org";
+import {
+  getPlayerById,
+  updatePlayer,
+  softDeletePlayer,
+} from "@/lib/services/player.service";
+import { updatePlayerBodySchema, toUpdatePlayerInput } from "@/lib/api/schemas";
+import { apiError, handleUnexpected } from "@/lib/api/respond";
 
-const UpdatePlayerSchema = z.object({
-  full_name:   z.string().min(2).max(255).optional(),
-  nationality: z.string().max(100).optional(),
-  age:         z.number().int().min(14).max(50).optional(),
-  position:    z.enum(["GK","CB","LB","RB","DM","CM","LW","RW","SS","ST"]).optional(),
-  photo_url:   z.string().url().optional(),
-});
+interface RouteContext {
+  params: Promise<{ id: string }>;
+}
 
-// ---------------------------------------------------------------------------
-// GET /api/players/:id — público (rol: guest) — perfil completo + radar snapshot
-// ---------------------------------------------------------------------------
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function GET(_request: NextRequest, props: RouteContext) {
+  const params = await props.params;
   try {
-    const player = await getPlayerById(params.id);
+    const orgId = await getActiveOrgId();
+    const player = await getPlayerById(orgId, params.id);
+
     if (!player) {
-      return NextResponse.json({ error: "Jugador no encontrado" }, { status: 404 });
+      return apiError("NOT_FOUND", "Jugador no encontrado");
     }
+
     return NextResponse.json(player);
   } catch (error) {
-    console.error("[GET /api/players/:id]", error);
-    return NextResponse.json({ error: "Error interno" }, { status: 500 });
+    return handleUnexpected("GET /api/players/:id", error);
   }
 }
 
-// ---------------------------------------------------------------------------
-// PUT /api/players/:id — Requiere rol: admin
-// ---------------------------------------------------------------------------
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function PUT(request: NextRequest, props: RouteContext) {
+  const params = await props.params;
   try {
-    const body = await request.json();
-    const validated = UpdatePlayerSchema.safeParse(body);
+    const parsed = updatePlayerBodySchema.safeParse(await request.json());
 
-    if (!validated.success) {
-      return NextResponse.json(
-        { error: "Datos inválidos", details: validated.error.flatten() },
-        { status: 400 }
-      );
+    if (!parsed.success) {
+      return apiError("VALIDATION_ERROR", "Datos inválidos", parsed.error.flatten());
     }
 
-    const updated = await updatePlayer(params.id, validated.data);
+    const orgId = await getActiveOrgId();
+    const updated = await updatePlayer(orgId, params.id, toUpdatePlayerInput(parsed.data));
+
     if (!updated) {
-      return NextResponse.json({ error: "Jugador no encontrado" }, { status: 404 });
+      return apiError("NOT_FOUND", "Jugador no encontrado");
     }
+
     return NextResponse.json(updated);
   } catch (error) {
-    console.error("[PUT /api/players/:id]", error);
-    return NextResponse.json({ error: "Error interno" }, { status: 500 });
+    return handleUnexpected("PUT /api/players/:id", error);
   }
 }
 
-// ---------------------------------------------------------------------------
-// DELETE /api/players/:id — Requiere rol: admin
-// ---------------------------------------------------------------------------
-export async function DELETE(
-  _request: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function DELETE(_request: NextRequest, props: RouteContext) {
+  const params = await props.params;
   try {
-    const deleted = await deletePlayer(params.id);
+    const orgId = await getActiveOrgId();
+    const deleted = await softDeletePlayer(orgId, params.id);
+
     if (!deleted) {
-      return NextResponse.json({ error: "Jugador no encontrado" }, { status: 404 });
+      return apiError("NOT_FOUND", "Jugador no encontrado");
     }
-    return NextResponse.json({ message: "Jugador eliminado correctamente" });
+
+    return NextResponse.json({ id: params.id, deleted: true });
   } catch (error) {
-    console.error("[DELETE /api/players/:id]", error);
-    return NextResponse.json({ error: "Error interno" }, { status: 500 });
+    return handleUnexpected("DELETE /api/players/:id", error);
   }
 }

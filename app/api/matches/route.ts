@@ -1,86 +1,50 @@
 // =============================================================================
-// ROUTE HANDLER: GET /api/matches  |  POST /api/matches
-// =============================================================================
-// GET: público (rol: guest) — lista de partidos con paginación
-// POST: protegido (rol: scout) — registrar nuevo partido
+// GET  /api/matches  — listado paginado por cursor
+// POST /api/matches  — alta de partido
 // =============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
-import { prisma } from "@/lib/db/prisma";
+import { getActiveOrgId } from "@/lib/auth/active-org";
+import { getMatches, createMatch } from "@/lib/services/match.service";
+import {
+  listMatchesQuerySchema,
+  createMatchBodySchema,
+  toCreateMatchInput,
+} from "@/lib/api/schemas";
+import { apiError, handleUnexpected } from "@/lib/api/respond";
 
-const CreateMatchSchema = z.object({
-  home_team:   z.string().min(2).max(100),
-  away_team:   z.string().min(2).max(100),
-  match_date:  z.string().datetime(),
-  competition: z.string().max(100).optional(),
-  season:      z.string().max(20).optional(),
-});
-
-// ---------------------------------------------------------------------------
-// GET /api/matches?page=1&limit=20&season=2024-25&competition=LaLiga
-// SQL equiv: SELECT * FROM matches WHERE season = @season ORDER BY match_date DESC
-// ---------------------------------------------------------------------------
 export async function GET(request: NextRequest) {
-  const { searchParams } = request.nextUrl;
-  const page  = Number(searchParams.get("page")  ?? "1");
-  const limit = Math.min(Number(searchParams.get("limit") ?? "20"), 100);
-  const season      = searchParams.get("season") ?? undefined;
-  const competition = searchParams.get("competition") ?? undefined;
-
   try {
-    const where: Record<string, unknown> = {};
-    if (season)      where.season = season;
-    if (competition) where.competition = competition;
+    const parsed = listMatchesQuerySchema.safeParse(
+      Object.fromEntries(request.nextUrl.searchParams)
+    );
 
-    const [matches, total] = await prisma.$transaction([
-      prisma.match.findMany({
-        where,
-        skip: (page - 1) * limit,
-        take: limit,
-        orderBy: { match_date: "desc" },
-        include: {
-          _count: { select: { player_matches: true } }, // cuántos jugadores registrados
-        },
-      }),
-      prisma.match.count({ where }),
-    ]);
+    if (!parsed.success) {
+      return apiError("VALIDATION_ERROR", "Parámetros inválidos", parsed.error.flatten());
+    }
 
-    return NextResponse.json({
-      data: matches,
-      pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
-    });
+    const orgId = await getActiveOrgId();
+    const result = await getMatches(orgId, parsed.data);
+
+    return NextResponse.json(result);
   } catch (error) {
-    console.error("[GET /api/matches]", error);
-    return NextResponse.json({ error: "Error interno" }, { status: 500 });
+    return handleUnexpected("GET /api/matches", error);
   }
 }
 
-// ---------------------------------------------------------------------------
-// POST /api/matches — Requiere rol: scout (validado por middleware)
-// ---------------------------------------------------------------------------
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const validated = CreateMatchSchema.safeParse(body);
+    const parsed = createMatchBodySchema.safeParse(await request.json());
 
-    if (!validated.success) {
-      return NextResponse.json(
-        { error: "Datos inválidos", details: validated.error.flatten() },
-        { status: 400 }
-      );
+    if (!parsed.success) {
+      return apiError("VALIDATION_ERROR", "Datos inválidos", parsed.error.flatten());
     }
 
-    const match = await prisma.match.create({
-      data: {
-        ...validated.data,
-        match_date: new Date(validated.data.match_date),
-      },
-    });
+    const orgId = await getActiveOrgId();
+    const match = await createMatch(orgId, toCreateMatchInput(parsed.data));
 
     return NextResponse.json(match, { status: 201 });
   } catch (error) {
-    console.error("[POST /api/matches]", error);
-    return NextResponse.json({ error: "Error interno" }, { status: 500 });
+    return handleUnexpected("POST /api/matches", error);
   }
 }
