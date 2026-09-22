@@ -51,6 +51,11 @@ const securityHeaders = [
 const nextConfig = {
   reactStrictMode: true,
 
+  // Next 16 reescribe un bloque en CLAUDE.md en cada `next dev` (avisos de
+  // breaking changes para agentes de IA). CLAUDE.md acá es un documento
+  // mantenido a mano con mucho cuidado; desactivado para que no lo toque.
+  agentRules: false,
+
   images: {
     remotePatterns: imageHosts.map((hostname) => ({ protocol: "https", hostname })),
   },
