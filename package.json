@@ -10,7 +10,7 @@
     "db:studio": "prisma studio",
     "dev": "next dev",
     "lint": "next lint",
-    "seed": "ts-node --project tsconfig.seed.json prisma/seed.ts",
+    "seed": "ts-node -r tsconfig-paths/register --project tsconfig.seed.json prisma/seed.ts",
     "start": "next start",
     "test": "vitest run",
     "test:watch": "vitest",
