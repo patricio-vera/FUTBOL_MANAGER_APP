@@ -7,6 +7,25 @@ Las entradas se agrupan por fase del Ciclo 2. Cada una nombra el ticket que la c
 
 En curso. Ticket activo: **MM-006** (login con Auth.js v5 + Argon2id).
 
+### Añadido
+
+- **MM-006** · Login por credenciales con Auth.js v5 (`next-auth@5.0.0-beta.32`, versión
+  exacta) y sesión JWT. Sin OAuth, sin adaptador de base de datos: con el proveedor
+  Credentials, Auth.js v5 no soporta sesiones en base de datos.
+- **MM-006** · `lib/auth/password.ts`: `hashPassword`/`verifyPassword` sobre
+  `@node-rs/argon2` (Argon2id, parámetros por defecto). `verifyPassword` compara contra un
+  hash señuelo cuando no hay hash real, para que el tiempo de respuesta no delate qué
+  correos están registrados.
+- **MM-006** · `lib/services/user.service.ts`: `findUserByEmail`, única excepción
+  documentada a la regla 4 de `CLAUDE.md` — la identidad de usuario es global, la
+  pertenencia a organización vive en `Membership`.
+- **MM-006** · `app/login/page.tsx` conectado de verdad: valida con Zod, llama a
+  `signIn("credentials")`, mismo mensaje de error para correo inexistente y contraseña
+  incorrecta. `app/layout.tsx` muestra el email de la sesión y un botón de cerrar sesión.
+- **MM-006** · `DEV_SEED_PASSWORD` (opcional, en `.env.local`): si existe, `prisma/seed.ts`
+  hashea y se la asigna a `owner@managermetrics.test`; si no, `passwordHash` queda `null`
+  y el seed avisa por consola. Ninguna contraseña se escribe en el repositorio.
+
 ### Corregido
 
 - `CLAUDE.md` declaraba Neon y Playwright en el stack. Ninguno de los dos existe en el
@@ -14,6 +33,22 @@ En curso. Ticket activo: **MM-006** (login con Auth.js v5 + Argon2id).
 - `CLAUDE.md` tenía la sección «Dónde vive cada cosa» duplicada y la regla de equivalencia
   de claves de Jira truncada a mitad de frase — justo la regla que evita tocar el ticket
   equivocado.
+- **MM-006** · `lib/env.ts`: `AUTH_SECRET` pasa a obligatoria; se retira el alias
+  `NEXTAUTH_SECRET` (NextAuth v4 se borró en MM-003, el alias ya no tenía sentido).
+- **MM-006** · `npm run seed` no podía importar nada de `lib/` con el alias `@/`:
+  `tsconfig-paths` estaba instalado pero nunca conectado al script. Ahora sí.
+- **MM-006** · Next 16 reescribe un bloque en `CLAUDE.md` en cada `next dev` (avisos de
+  breaking changes para agentes de IA). Desactivado con `agentRules: false` en
+  `next.config.js`: `CLAUDE.md` es un documento mantenido a mano.
+
+### Cambiado
+
+- **MM-006** · `app/layout.tsx` llama a `auth()` para mostrar el email de la sesión y el
+  botón de cerrar sesión. Efecto colateral: `npm run build` ya no pre-renderiza NINGUNA
+  ruta como estática (antes `/`, `/matches`, `/ratings/top` y `/reclutamiento` sí lo
+  hacían) — toda la app pasa a `ƒ` (dinámica). Es el patrón estándar de Auth.js v5 para
+  un nav consciente de sesión; se deja anotado por si en algún momento conviene acotar el
+  alcance de `auth()` a una parte más chica del árbol.
 
 ### Eliminado
 

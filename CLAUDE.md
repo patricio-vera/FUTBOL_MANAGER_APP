@@ -7,11 +7,11 @@ existen para que eso no se repita.
 ## Stack
 
 Next.js 16 (App Router, Turbopack) · React 19 · TypeScript strict · Prisma 5 + PostgreSQL 16 ·
-Tailwind · Vitest
+Auth.js v5 (`next-auth@5.0.0-beta.32`, versión exacta) + Argon2id · Tailwind · Vitest
 
-Auth.js v5 entra en MM-006 y todavía no está instalado. **No hay pruebas end-to-end**:
-`@playwright/test` no está en `package.json` y no existe `npm run test:e2e`. Si algún día
-se añaden, este bloque se actualiza en el mismo commit que los instala.
+**No hay pruebas end-to-end**: `@playwright/test` no está en `package.json` y no existe
+`npm run test:e2e`. Si algún día se añaden, este bloque se actualiza en el mismo commit
+que los instala.
 
 ## Reglas no negociables
 
@@ -130,10 +130,13 @@ Costuras temporales conocidas:
   Desaparece en MM-008, cuando la sesión de Auth.js pase a ser la fuente.
 - `lib/services/rating-aggregator.service.ts` — solo lee ratings. El motor de cálculo
   es MM-014; hasta entonces `player_ratings` está vacía a propósito.
-- `lib/env.ts` acepta `NEXTAUTH_SECRET` además de `AUTH_SECRET`. El alias se retira al
-  cerrar MM-006.
 - `eslint` está fijado en 9.39.5: `eslint-plugin-react@7.37.5` revienta con ESLint 10
   (`context.getFilename is not a function`). Revisar cuando el plugin publique soporte.
+- Las tablas `sessions`, `accounts` y `verification_tokens` están **vacías a propósito**.
+  MM-006 usa el proveedor Credentials con estrategia `session: { strategy: "jwt" }` —
+  Auth.js v5 no soporta sesiones en base de datos con Credentials, así que no hay
+  adaptador conectado (`@auth/prisma-adapter` deliberadamente no se instala). Esas tablas
+  empiezan a llenarse recién cuando entre OAuth.
 
 ## Definición de terminado
 
