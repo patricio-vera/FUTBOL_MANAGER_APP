@@ -1,17 +1,20 @@
 import type { Metadata } from "next";
-import Link from "next/link"; 
+import Link from "next/link";
 import "./globals.css";
+import { auth, signOut } from "@/lib/auth";
 
 export const metadata: Metadata = {
-  title: "ManagerMetrics", 
+  title: "ManagerMetrics",
   description: "Plataforma de análisis de rendimiento y scouting de fútbol profesional",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const session = await auth();
+
   return (
     <html lang="es">
       <body className="bg-slate-950 text-white min-h-screen flex flex-col">
@@ -30,18 +33,37 @@ export default function RootLayout({
             {/* Botones de Acción (Derecha) */}
             <div className="flex items-center space-x-4">
               {/* Cambiado: Texto actualizado para mejorar la seguridad y el filtro de usuarios */}
-              <Link 
-                href="/reclutamiento" 
+              <Link
+                href="/reclutamiento"
                 className="text-sm font-medium text-slate-400 hover:text-white transition-colors"
               >
                 Regístrate si eres Reclutador
               </Link>
-              <Link 
-                href="/login" 
-                className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 text-sm font-semibold px-4 py-2 rounded-lg transition-colors shadow-lg shadow-emerald-500/10"
-              >
-                Iniciar Sesión
-              </Link>
+              {session?.user ? (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-slate-400">{session.user.email}</span>
+                  <form
+                    action={async () => {
+                      "use server";
+                      await signOut({ redirectTo: "/login" });
+                    }}
+                  >
+                    <button
+                      type="submit"
+                      className="text-sm font-semibold text-slate-300 hover:text-white border border-slate-700 hover:border-slate-600 px-4 py-2 rounded-lg transition-colors"
+                    >
+                      Cerrar sesión
+                    </button>
+                  </form>
+                </div>
+              ) : (
+                <Link
+                  href="/login"
+                  className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 text-sm font-semibold px-4 py-2 rounded-lg transition-colors shadow-lg shadow-emerald-500/10"
+                >
+                  Iniciar Sesión
+                </Link>
+              )}
             </div>
 
           </div>

@@ -10,6 +10,18 @@
 // =============================================================================
 
 import { PrismaClient, Position, Foot, OrgPlan, MemberRole, MetricUnit } from "@prisma/client";
+import { hashPassword } from "@/lib/auth/password";
+
+// El seed corre por fuera de Next.js (ts-node), así que Prisma solo lee
+// `.env` automáticamente. DEV_SEED_PASSWORD vive en `.env.local` a propósito
+// (es una costura de desarrollo, no una cadena de conexión) — se carga a mano.
+// Ausente en CI, donde el seed no corre: no debe romper nada si falta.
+try {
+  process.loadEnvFile(".env.local");
+} catch {
+  // Sin .env.local no hay DEV_SEED_PASSWORD que cargar; el seed sigue
+  // funcionando y deja al usuario owner sin contraseña.
+}
 
 const prisma = new PrismaClient();
 
@@ -151,11 +163,30 @@ async function main() {
   }
 
   // --- Usuario propietario --------------------------------------------------
+  // Sin DEV_SEED_PASSWORD, passwordHash queda en null a propósito: ninguna
+  // contraseña se escribe en el repositorio, y un owner sin passwordHash es
+  // justo el caso "usuario solo-OAuth" que authorize() debe rechazar.
+  const seedPassword = process.env.DEV_SEED_PASSWORD;
+  const ownerPasswordHash = seedPassword ? await hashPassword(seedPassword) : null;
+
   const owner = await prisma.user.upsert({
     where: { email: "owner@managermetrics.test" },
-    update: {},
-    create: { email: "owner@managermetrics.test", name: "Cuenta de desarrollo" },
+    update: { passwordHash: ownerPasswordHash },
+    create: {
+      email: "owner@managermetrics.test",
+      name: "Cuenta de desarrollo",
+      passwordHash: ownerPasswordHash,
+    },
   });
+
+  if (!seedPassword) {
+    console.log(
+      "\nAVISO: DEV_SEED_PASSWORD no está definida en .env.local. " +
+        "owner@managermetrics.test quedó SIN contraseña (passwordHash null) y no\n" +
+        "podrá iniciar sesión por credenciales hasta que definas esa variable y\n" +
+        "vuelvas a correr `npm run seed`.\n"
+    );
+  }
 
   // --- Dos organizaciones con datos disjuntos -------------------------------
   const organizations = [

@@ -10,7 +10,7 @@
     "db:studio": "prisma studio",
     "dev": "next dev",
     "lint": "next lint",
-    "seed": "ts-node --project tsconfig.seed.json prisma/seed.ts",
+    "seed": "ts-node -r tsconfig-paths/register --project tsconfig.seed.json prisma/seed.ts",
     "start": "next start",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -21,11 +21,13 @@
     "seed": "npm run seed"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.2.1",
     "@prisma/client": "^5.22.0",
     "clsx": "^2.1.1",
     "jose": "^5.9.6",
     "lucide-react": "^1.14.0",
     "next": "16.3.5",
+    "next-auth": "5.0.0-beta.32",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "recharts": "^2.15.4",

@@ -33,15 +33,11 @@ const envSchema = z
       .optional(),
 
     // --- Autenticación ---
-    // El proyecto está migrando de NextAuth v4 (NEXTAUTH_*) a Auth.js v5 (AUTH_*).
-    // Se aceptan ambos nombres mientras dure MM-006; después queda solo AUTH_SECRET.
-    AUTH_SECRET: z.string().min(32, "AUTH_SECRET necesita al menos 32 caracteres").optional(),
-    NEXTAUTH_SECRET: z
-      .string()
-      .min(32, "NEXTAUTH_SECRET necesita al menos 32 caracteres")
-      .optional(),
+    // NextAuth v4 (NEXTAUTH_*) se borró en MM-003. El alias NEXTAUTH_SECRET que
+    // aceptaba esta validación mientras duraba la migración se retiró al cerrar
+    // MM-006: ahora AUTH_SECRET es la única variable y es obligatoria.
+    AUTH_SECRET: z.string().min(32, "AUTH_SECRET necesita al menos 32 caracteres"),
     AUTH_URL: z.string().url().optional(),
-    NEXTAUTH_URL: z.string().url().optional(),
 
     // --- OAuth (opcionales) ---
     GOOGLE_CLIENT_ID: z.string().optional(),
@@ -54,18 +50,14 @@ const envSchema = z
 
     // --- Costura temporal, desaparece en MM-008 ---
     DEV_ORG_ID: z.string().optional(),
+
+    // --- Costura de desarrollo: contraseña del usuario sembrado por el seed.
+    // Solo la lee prisma/seed.ts. Si falta, el seed deja passwordHash en null
+    // en vez de inventar una contraseña — ninguna contraseña se escribe en el
+    // repositorio.
+    DEV_SEED_PASSWORD: z.string().optional(),
   })
   .superRefine((value, ctx) => {
-    if (!value.AUTH_SECRET && !value.NEXTAUTH_SECRET) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["AUTH_SECRET"],
-        message:
-          "Falta el secreto de sesión. Define AUTH_SECRET (o NEXTAUTH_SECRET mientras dure " +
-          "la migración). Genéralo con: openssl rand -base64 32",
-      });
-    }
-
     // Este guardrail protege el pooler de Neon (pgbouncer), no "producción" en
     // abstracto: si DATABASE_URL y DIRECT_DATABASE_URL son la misma cadena
     // pooled, las migraciones agotan las conexiones agrupadas bajo carga.
@@ -119,8 +111,8 @@ function loadEnv() {
 
   return {
     ...value,
-    /** Secreto efectivo de sesión, resuelto una sola vez. */
-    sessionSecret: (value.AUTH_SECRET ?? value.NEXTAUTH_SECRET) as string,
+    /** Secreto de sesión. Alias explícito: el resto del código usa este nombre. */
+    sessionSecret: value.AUTH_SECRET,
     /** Hosts permitidos para imágenes remotas, ya normalizados. */
     imageHosts: (value.IMAGE_HOST_ALLOWLIST ?? "")
       .split(",")

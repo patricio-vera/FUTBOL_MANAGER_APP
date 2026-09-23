@@ -47,12 +47,15 @@ describe("validación de entorno", () => {
     await expect(loadWith({ AUTH_SECRET: "corto" })).rejects.toThrow(/32 caracteres/);
   });
 
-  it("acepta NEXTAUTH_SECRET mientras dure la migración a Auth.js v5", async () => {
-    const { env } = await loadWith({
-      AUTH_SECRET: undefined,
-      NEXTAUTH_SECRET: "otro-secreto-largo-de-mas-de-treinta-y-dos-chars",
-    });
-    expect(env.sessionSecret).toBe("otro-secreto-largo-de-mas-de-treinta-y-dos-chars");
+  it("ya no acepta NEXTAUTH_SECRET: el alias se retiró al cerrar MM-006", async () => {
+    // NextAuth v4 se borró en MM-003; el alias que toleraba NEXTAUTH_SECRET
+    // mientras duraba la migración a Auth.js v5 no debe seguir funcionando.
+    await expect(
+      loadWith({
+        AUTH_SECRET: undefined,
+        NEXTAUTH_SECRET: "otro-secreto-largo-de-mas-de-treinta-y-dos-chars",
+      })
+    ).rejects.toThrow(/AUTH_SECRET/);
   });
 
   it("rechaza una DATABASE_URL que no sea PostgreSQL", async () => {
