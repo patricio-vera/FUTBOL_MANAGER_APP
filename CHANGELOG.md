@@ -26,6 +26,11 @@ En curso. Ticket activo: **MM-006** (login con Auth.js v5 + Argon2id).
   hashea y se la asigna a `owner@managermetrics.test`; si no, `passwordHash` queda `null`
   y el seed avisa por consola. Ninguna contraseña se escribe en el repositorio.
 
+- `README.md`: portada del repositorio con el estado real del proyecto, lo que todavía no
+  funciona dicho claro (sin protección de fuerza bruta, interfaz de solo lectura por el
+  middleware Bearer, aislamiento sin RLS) y cómo levantarlo en local. Cada afirmación se
+  contrastó contra el código, `package.json`, el CI y el servidor de desarrollo.
+
 ### Corregido
 
 - `CLAUDE.md` declaraba Neon y Playwright en el stack. Ninguno de los dos existe en el
